@@ -342,7 +342,7 @@ static int __bprm_mm_init(struct linux_binprm *bprm)
 		return -ENOMEM;
 	vma_set_anonymous(vma);
 
-	if (down_write_killable(&mm->mmap_sem)) {
+	if (down_write_killable(&mm->mmap_lock)) {
 		err = -EINTR;
 		goto err_free;
 	}
@@ -365,11 +365,11 @@ static int __bprm_mm_init(struct linux_binprm *bprm)
 
 	mm->stack_vm = mm->total_vm = 1;
 	arch_bprm_mm_init(mm, vma);
-	up_write(&mm->mmap_sem);
+	up_write(&mm->mmap_lock);
 	bprm->p = vma->vm_end - sizeof(void *);
 	return 0;
 err:
-	up_write(&mm->mmap_sem);
+	up_write(&mm->mmap_lock);
 err_free:
 	bprm->vma = NULL;
 	vm_area_free(vma);
@@ -782,7 +782,7 @@ int setup_arg_pages(struct linux_binprm *bprm,
 		bprm->loader -= stack_shift;
 	bprm->exec -= stack_shift;
 
-	if (down_write_killable(&mm->mmap_sem))
+	if (down_write_killable(&mm->mmap_lock))
 		return -EINTR;
 
 	vm_flags = VM_STACK_FLAGS;
@@ -839,7 +839,7 @@ int setup_arg_pages(struct linux_binprm *bprm,
 		ret = -EFAULT;
 
 out_unlock:
-	up_write(&mm->mmap_sem);
+	up_write(&mm->mmap_lock);
 	return ret;
 }
 EXPORT_SYMBOL(setup_arg_pages);
@@ -1068,9 +1068,9 @@ static int exec_mmap(struct mm_struct *mm)
 		 * through with the exec.  We must hold mmap_sem around
 		 * checking core_state and changing tsk->mm.
 		 */
-		down_read(&old_mm->mmap_sem);
+		down_read(&old_mm->mmap_lock);
 		if (unlikely(old_mm->core_state)) {
-			up_read(&old_mm->mmap_sem);
+			up_read(&old_mm->mmap_lock);
 			return -EINTR;
 		}
 	}
@@ -1096,7 +1096,7 @@ static int exec_mmap(struct mm_struct *mm)
 	vmacache_flush(tsk);
 	task_unlock(tsk);
 	if (old_mm) {
-		up_read(&old_mm->mmap_sem);
+		up_read(&old_mm->mmap_lock);
 		BUG_ON(active_mm != old_mm);
 		setmax_mm_hiwater_rss(&tsk->signal->maxrss, old_mm);
 		mm_update_next_owner(old_mm);

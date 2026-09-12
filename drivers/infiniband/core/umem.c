@@ -147,14 +147,14 @@ struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
 
 	lock_limit = rlimit(RLIMIT_MEMLOCK) >> PAGE_SHIFT;
 
-	down_write(&current->mm->mmap_sem);
+	down_write(&current->mm->mmap_lock);
 	current->mm->pinned_vm += npages;
 	if ((current->mm->pinned_vm > lock_limit) && !capable(CAP_IPC_LOCK)) {
-		up_write(&current->mm->mmap_sem);
+		up_write(&current->mm->mmap_lock);
 		ret = -ENOMEM;
 		goto vma;
 	}
-	up_write(&current->mm->mmap_sem);
+	up_write(&current->mm->mmap_lock);
 
 	cur_base = addr & PAGE_MASK;
 
@@ -172,14 +172,14 @@ struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
 
 	sg_list_start = umem->sg_head.sgl;
 
-	down_read(&current->mm->mmap_sem);
+	down_read(&current->mm->mmap_lock);
 	while (npages) {
 		ret = get_user_pages_longterm(cur_base,
 				     min_t(unsigned long, npages,
 					   PAGE_SIZE / sizeof (struct page *)),
 				     gup_flags, page_list, vma_list);
 		if (ret < 0) {
-			up_read(&current->mm->mmap_sem);
+			up_read(&current->mm->mmap_lock);
 			goto umem_release;
 		}
 
@@ -197,7 +197,7 @@ struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
 		/* preparing for next loop */
 		sg_list_start = sg;
 	}
-	up_read(&current->mm->mmap_sem);
+	up_read(&current->mm->mmap_lock);
 
 	umem->nmap = ib_dma_map_sg_attrs(context->device,
 				  umem->sg_head.sgl,
@@ -216,9 +216,9 @@ struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
 umem_release:
 	__ib_umem_release(context->device, umem, 0);
 vma:
-	down_write(&current->mm->mmap_sem);
+	down_write(&current->mm->mmap_lock);
 	current->mm->pinned_vm -= ib_umem_num_pages(umem);
-	up_write(&current->mm->mmap_sem);
+	up_write(&current->mm->mmap_lock);
 out:
 	if (vma_list)
 		free_page((unsigned long) vma_list);
@@ -234,9 +234,9 @@ static void ib_umem_account(struct work_struct *work)
 {
 	struct ib_umem *umem = container_of(work, struct ib_umem, work);
 
-	down_write(&umem->mm->mmap_sem);
+	down_write(&umem->mm->mmap_lock);
 	umem->mm->pinned_vm -= umem->diff;
-	up_write(&umem->mm->mmap_sem);
+	up_write(&umem->mm->mmap_lock);
 	mmput(umem->mm);
 	kfree(umem);
 }
@@ -278,7 +278,7 @@ void ib_umem_release(struct ib_umem *umem)
 	 * we defer the vm_locked accounting to the system workqueue.
 	 */
 	if (context->closing) {
-		if (!down_write_trylock(&mm->mmap_sem)) {
+		if (!down_write_trylock(&mm->mmap_lock)) {
 			INIT_WORK(&umem->work, ib_umem_account);
 			umem->mm   = mm;
 			umem->diff = diff;
@@ -287,10 +287,10 @@ void ib_umem_release(struct ib_umem *umem)
 			return;
 		}
 	} else
-		down_write(&mm->mmap_sem);
+		down_write(&mm->mmap_lock);
 
 	mm->pinned_vm -= diff;
-	up_write(&mm->mmap_sem);
+	up_write(&mm->mmap_lock);
 	mmput(mm);
 out:
 	kfree(umem);

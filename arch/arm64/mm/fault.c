@@ -490,11 +490,11 @@ static int __kprobes do_page_fault(unsigned long addr, unsigned int esr,
 	 * validly references user space from well defined areas of the code,
 	 * we can bug out early if this is from code which shouldn't.
 	 */
-	if (!down_read_trylock(&mm->mmap_sem)) {
+	if (!down_read_trylock(&mm->mmap_lock)) {
 		if (!user_mode(regs) && !search_exception_tables(regs->pc))
 			goto no_context;
 retry:
-		down_read(&mm->mmap_sem);
+		down_read(&mm->mmap_lock);
 	} else {
 		/*
 		 * The above down_read_trylock() might have succeeded in which
@@ -523,7 +523,7 @@ retry:
 			goto retry;
 		}
 	}
-	up_read(&mm->mmap_sem);
+	up_read(&mm->mmap_lock);
 
 	/*
 	 * Handle the "normal" (no error) case first.

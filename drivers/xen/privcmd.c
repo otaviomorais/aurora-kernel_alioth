@@ -39,6 +39,7 @@
 #include <xen/page.h>
 #include <xen/xen-ops.h>
 #include <xen/balloon.h>
+#include <xen/xenbus.h>
 
 #include "privcmd.h"
 
@@ -60,6 +61,11 @@ MODULE_PARM_DESC(dm_op_buf_max_size,
 struct privcmd_data {
 	domid_t domid;
 };
+
+/* DOMID_INVALID implies no restriction */
+static domid_t target_domain = DOMID_INVALID;
+static bool restrict_wait;
+static DECLARE_WAIT_QUEUE_HEAD(restrict_wait_wq);
 
 static int privcmd_vma_range_is_mapped(
                struct vm_area_struct *vma,
@@ -277,7 +283,7 @@ static long privcmd_ioctl_mmap(struct file *file, void __user *udata)
 	if (rc || list_empty(&pagelist))
 		goto out;
 
-	down_write(&mm->mmap_sem);
+	down_write(&mm->mmap_lock);
 
 	{
 		struct page *page = list_first_entry(&pagelist,
@@ -302,7 +308,7 @@ static long privcmd_ioctl_mmap(struct file *file, void __user *udata)
 
 
 out_up:
-	up_write(&mm->mmap_sem);
+	up_write(&mm->mmap_lock);
 
 out:
 	free_page_list(&pagelist);
@@ -498,7 +504,7 @@ static long privcmd_ioctl_mmap_batch(
 		}
 	}
 
-	down_write(&mm->mmap_sem);
+	down_write(&mm->mmap_lock);
 
 	vma = find_vma(mm, m.addr);
 	if (!vma ||
@@ -554,7 +560,7 @@ static long privcmd_ioctl_mmap_batch(
 	BUG_ON(traverse_pages_block(m.num, sizeof(xen_pfn_t),
 				    &pagelist, mmap_batch_fn, &state));
 
-	up_write(&mm->mmap_sem);
+	up_write(&mm->mmap_lock);
 
 	if (state.global_error) {
 		/* Write back errors in second pass. */
@@ -575,7 +581,7 @@ out:
 	return ret;
 
 out_unlock:
-	up_write(&mm->mmap_sem);
+	up_write(&mm->mmap_lock);
 	goto out;
 }
 
@@ -777,7 +783,7 @@ static long privcmd_ioctl_mmap_resource(struct file *file,
 		return __put_user(xdata.nr_frames, &udata->num);
 	}
 
-	down_write(&mm->mmap_sem);
+	down_write(&mm->mmap_lock);
 
 	vma = find_vma(mm, kdata.addr);
 	if (!vma || vma->vm_ops != &privcmd_vm_ops) {
@@ -859,7 +865,7 @@ static long privcmd_ioctl_mmap_resource(struct file *file,
 	}
 
 out:
-	up_write(&mm->mmap_sem);
+	up_write(&mm->mmap_lock);
 	kfree(pfns);
 
 	return rc;
@@ -909,13 +915,16 @@ static long privcmd_ioctl(struct file *file,
 
 static int privcmd_open(struct inode *ino, struct file *file)
 {
-	struct privcmd_data *data = kzalloc(sizeof(*data), GFP_KERNEL);
+	struct privcmd_data *data;
 
+	if (wait_event_interruptible(restrict_wait_wq, !restrict_wait) < 0)
+		return -EINTR;
+
+	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
-	/* DOMID_INVALID implies no restriction */
-	data->domid = DOMID_INVALID;
+	data->domid = target_domain;
 
 	file->private_data = data;
 	return 0;
@@ -948,6 +957,12 @@ static void privcmd_close(struct vm_area_struct *vma)
 	kfree(pages);
 }
 
+static int privcmd_may_split(struct vm_area_struct *area, unsigned long addr)
+{
+	/* Forbid splitting, avoids double free via privcmd_close(). */
+	return -EINVAL;
+}
+
 static vm_fault_t privcmd_fault(struct vm_fault *vmf)
 {
 	printk(KERN_DEBUG "privcmd_fault: vma=%p %lx-%lx, pgoff=%lx, uv=%p\n",
@@ -959,6 +974,7 @@ static vm_fault_t privcmd_fault(struct vm_fault *vmf)
 
 static const struct vm_operations_struct privcmd_vm_ops = {
 	.close = privcmd_close,
+	.split = privcmd_may_split,
 	.fault = privcmd_fault
 };
 
@@ -1009,12 +1025,54 @@ static struct miscdevice privcmd_dev = {
 	.fops = &xen_privcmd_fops,
 };
 
+static int init_restrict(struct notifier_block *notifier,
+			 unsigned long event,
+			 void *data)
+{
+	char *target;
+	unsigned int domid;
+
+	/* Default to an guaranteed unused domain-id. */
+	target_domain = DOMID_IDLE;
+
+	target = xenbus_read(XBT_NIL, "target", "", NULL);
+	if (IS_ERR(target) || kstrtouint(target, 10, &domid)) {
+		pr_err("No target domain found, blocking all hypercalls\n");
+		goto out;
+	}
+
+	target_domain = domid;
+
+ out:
+	if (!IS_ERR(target))
+		kfree(target);
+
+	restrict_wait = false;
+	wake_up_all(&restrict_wait_wq);
+
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block xenstore_notifier = {
+	.notifier_call = init_restrict,
+};
+
+static void __init restrict_driver(void)
+{
+	restrict_wait = true;
+
+	register_xenstore_notifier(&xenstore_notifier);
+}
+
 static int __init privcmd_init(void)
 {
 	int err;
 
 	if (!xen_domain())
 		return -ENODEV;
+
+	if (!xen_initial_domain())
+		restrict_driver();
 
 	err = misc_register(&privcmd_dev);
 	if (err != 0) {
@@ -1034,6 +1092,9 @@ static int __init privcmd_init(void)
 
 static void __exit privcmd_exit(void)
 {
+	if (!xen_initial_domain())
+		unregister_xenstore_notifier(&xenstore_notifier);
+
 	misc_deregister(&privcmd_dev);
 	misc_deregister(&xen_privcmdbuf_dev);
 }

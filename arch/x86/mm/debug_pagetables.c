@@ -26,9 +26,9 @@ static const struct file_operations ptdump_fops = {
 static int ptdump_show_curknl(struct seq_file *m, void *v)
 {
 	if (current->mm->pgd) {
-		down_read(&current->mm->mmap_sem);
+		down_read(&current->mm->mmap_lock);
 		ptdump_walk_pgd_level_debugfs(m, current->mm->pgd, false);
-		up_read(&current->mm->mmap_sem);
+		up_read(&current->mm->mmap_lock);
 	}
 	return 0;
 }
@@ -52,9 +52,9 @@ static struct dentry *pe_curusr;
 static int ptdump_show_curusr(struct seq_file *m, void *v)
 {
 	if (current->mm->pgd) {
-		down_read(&current->mm->mmap_sem);
+		down_read(&current->mm->mmap_lock);
 		ptdump_walk_pgd_level_debugfs(m, current->mm->pgd, true);
-		up_read(&current->mm->mmap_sem);
+		up_read(&current->mm->mmap_lock);
 	}
 	return 0;
 }

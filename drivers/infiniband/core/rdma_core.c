@@ -832,9 +832,9 @@ static void ufile_disassociate_ucontext(struct ib_ucontext *ibcontext)
 		}
 	}
 
-	down_write(&owning_mm->mmap_sem);
+	down_write(&owning_mm->mmap_lock);
 	ib_dev->disassociate_ucontext(ibcontext);
-	up_write(&owning_mm->mmap_sem);
+	up_write(&owning_mm->mmap_lock);
 	mmput(owning_mm);
 	put_task_struct(owning_process);
 }

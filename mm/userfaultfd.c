@@ -274,7 +274,7 @@ static __always_inline ssize_t __mcopy_atomic_hugetlb(struct mm_struct *dst_mm,
 	 * feature is not supported.
 	 */
 	if (mode == MCOPY_ATOMIC_ZEROPAGE) {
-		up_read(&dst_mm->mmap_sem);
+		up_read(&dst_mm->mmap_lock);
 		return -EINVAL;
 	}
 
@@ -370,7 +370,7 @@ retry:
 		cond_resched();
 
 		if (unlikely(err == -ENOENT)) {
-			up_read(&dst_mm->mmap_sem);
+			up_read(&dst_mm->mmap_lock);
 			BUG_ON(!page);
 
 			err = copy_huge_page_from_user(page,
@@ -380,7 +380,7 @@ retry:
 				err = -EFAULT;
 				goto out;
 			}
-			down_read(&dst_mm->mmap_sem);
+			down_read(&dst_mm->mmap_lock);
 			/*
 			 * If memory mappings are changing because of non-cooperative
 			 * operation (e.g. mremap) running in parallel, bail out and
@@ -409,7 +409,7 @@ retry:
 	}
 
 out_unlock:
-	up_read(&dst_mm->mmap_sem);
+	up_read(&dst_mm->mmap_lock);
 out:
 	if (page) {
 		/*
@@ -544,7 +544,7 @@ static __always_inline ssize_t __mcopy_atomic(struct mm_struct *dst_mm,
 	copied = 0;
 	page = NULL;
 retry:
-	down_read(&dst_mm->mmap_sem);
+	down_read(&dst_mm->mmap_lock);
 
 	/*
 	 * If memory mappings are changing because of non-cooperative
@@ -654,10 +654,10 @@ retry:
 			 * threads don't keep retrying for progress-critical
 			 * pages.
 			 */
-			if (copied && rwsem_is_contended(&dst_mm->mmap_sem))
+			if (copied && rwsem_is_contended(&dst_mm->mmap_lock))
 				break;
 
-			up_read(&dst_mm->mmap_sem);
+			up_read(&dst_mm->mmap_lock);
 			BUG_ON(!page);
 
 			page_kaddr = kmap(page);
@@ -682,7 +682,7 @@ retry:
 			if (fatal_signal_pending(current))
 				err = -EINTR;
 
-			if (rwsem_is_contended(&dst_mm->mmap_sem))
+			if (rwsem_is_contended(&dst_mm->mmap_lock))
 				err = -EAGAIN;
 		}
 		if (err)
@@ -690,7 +690,7 @@ retry:
 	}
 
 out_unlock:
-	up_read(&dst_mm->mmap_sem);
+	up_read(&dst_mm->mmap_lock);
 out:
 	if (page)
 		put_page(page);

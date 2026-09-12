@@ -2467,15 +2467,15 @@ static int memdesc_sg_virt(struct kgsl_memdesc *memdesc, unsigned long useraddr)
 		goto out;
 	}
 
-	down_read(&current->mm->mmap_sem);
+	down_read(&current->mm->mmap_lock);
 	if (!check_vma(useraddr, memdesc->size)) {
-		up_read(&current->mm->mmap_sem);
+		up_read(&current->mm->mmap_lock);
 		ret = -EFAULT;
 		goto out;
 	}
 
 	npages = get_user_pages(useraddr, sglen, write, pages, NULL);
-	up_read(&current->mm->mmap_sem);
+	up_read(&current->mm->mmap_lock);
 
 	ret = (npages < 0) ? (int)npages : 0;
 	if (ret)
@@ -2597,7 +2597,7 @@ static int kgsl_setup_dmabuf_useraddr(struct kgsl_device *device,
 	 * Find the VMA containing this pointer and figure out if it
 	 * is a dma-buf.
 	 */
-	down_read(&current->mm->mmap_sem);
+	down_read(&current->mm->mmap_lock);
 	vma = find_vma(current->mm, hostptr);
 
 	if (vma && vma->vm_file) {
@@ -2605,7 +2605,7 @@ static int kgsl_setup_dmabuf_useraddr(struct kgsl_device *device,
 
 		ret = check_vma_flags(vma, entry->memdesc.flags);
 		if (ret) {
-			up_read(&current->mm->mmap_sem);
+			up_read(&current->mm->mmap_lock);
 			return ret;
 		}
 
@@ -2614,7 +2614,7 @@ static int kgsl_setup_dmabuf_useraddr(struct kgsl_device *device,
 		 * already mapped
 		 */
 		if (vma->vm_ops == &kgsl_gpumem_vm_ops) {
-			up_read(&current->mm->mmap_sem);
+			up_read(&current->mm->mmap_lock);
 			return -EFAULT;
 		}
 
@@ -2625,14 +2625,14 @@ static int kgsl_setup_dmabuf_useraddr(struct kgsl_device *device,
 	}
 
 	if (IS_ERR_OR_NULL(dmabuf)) {
-		up_read(&current->mm->mmap_sem);
+		up_read(&current->mm->mmap_lock);
 		return dmabuf ? PTR_ERR(dmabuf) : -ENODEV;
 	}
 
 	ret = kgsl_setup_dma_buf(device, pagetable, entry, dmabuf);
 	if (ret) {
 		dma_buf_put(dmabuf);
-		up_read(&current->mm->mmap_sem);
+		up_read(&current->mm->mmap_lock);
 		return ret;
 	}
 
@@ -2644,7 +2644,7 @@ static int kgsl_setup_dmabuf_useraddr(struct kgsl_device *device,
 	else
 		entry->memdesc.flags &= ~((u64) KGSL_MEMFLAGS_IOCOHERENT);
 
-	up_read(&current->mm->mmap_sem);
+	up_read(&current->mm->mmap_lock);
 	return 0;
 }
 #else

@@ -556,7 +556,7 @@ retry:
 	task_swap = get_mm_counter(mm, MM_SWAPENTS);
 
 
-	down_read(&mm->mmap_sem);
+	down_read(&mm->mmap_lock);
 
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
 		if (vma->vm_flags & VM_NANDSWAP)
@@ -580,7 +580,7 @@ retry:
 	}
 
 	flush_tlb_mm(mm);
-	up_read(&mm->mmap_sem);
+	up_read(&mm->mmap_lock);
 	mmput(mm);
 	if (err) {
 		err = 0;
@@ -796,7 +796,7 @@ static ssize_t reclaim_anon(struct task_struct *task)
 	rp.nr_scanned = 0;
 	rp.type = ntask->type;
 
-	down_read(&mm->mmap_sem);
+	down_read(&mm->mmap_lock);
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
 		if (is_vm_hugetlb_page(vma))
 			continue;
@@ -820,7 +820,7 @@ static ssize_t reclaim_anon(struct task_struct *task)
 	}
 
 	flush_tlb_mm(mm);
-	up_read(&mm->mmap_sem);
+	up_read(&mm->mmap_lock);
 #ifdef CONFIG_OPLUS_NANDSWAP_DEBUG
 	a_task_anon = get_mm_counter(mm, MM_ANONPAGES);
 	a_task_swap = get_mm_counter(mm, MM_SWAPENTS);
@@ -1011,7 +1011,7 @@ static bool drop_swapcache_task(struct task_struct *task)
 	rp.nr_reclaimed = 0;
 	rp.nr_scanned = 0;
 
-	down_read(&mm->mmap_sem);
+	down_read(&mm->mmap_lock);
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
 		if (is_vm_hugetlb_page(vma))
 			continue;
@@ -1033,7 +1033,7 @@ static bool drop_swapcache_task(struct task_struct *task)
 	}
 
 	flush_tlb_mm(mm);
-	up_read(&mm->mmap_sem);
+	up_read(&mm->mmap_lock);
 #ifdef CONFIG_OPLUS_NANDSWAP_DEBUG
 	a_task_anon = get_mm_counter(mm, MM_ANONPAGES);
 	a_task_swap = get_mm_counter(mm, MM_SWAPENTS);
@@ -1173,7 +1173,7 @@ static unsigned long swap_ratio_task(struct task_struct *task, unsigned long typ
 	nsr.type = type;
 
 
-	down_read(&mm->mmap_sem);
+	down_read(&mm->mmap_lock);
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
 		if (is_vm_hugetlb_page(vma))
 			continue;
@@ -1191,7 +1191,7 @@ static unsigned long swap_ratio_task(struct task_struct *task, unsigned long typ
 	}
 
 	flush_tlb_mm(mm);
-	up_read(&mm->mmap_sem);
+	up_read(&mm->mmap_lock);
 	mmput(mm);
 out:
 	return nsr.nand + nsr.ram ? nsr.nand * 100 / (nsr.nand + nsr.ram) : 0;

@@ -99,7 +99,7 @@ void do_page_fault(unsigned long address, struct pt_regs *regs)
 	if (user_mode(regs))
 		flags |= FAULT_FLAG_USER;
 retry:
-	down_read(&mm->mmap_sem);
+	down_read(&mm->mmap_lock);
 	vma = find_vma(mm, address);
 	if (!vma)
 		goto bad_area;
@@ -175,7 +175,7 @@ good_area:
 		}
 
 		/* Fault Handled Gracefully */
-		up_read(&mm->mmap_sem);
+		up_read(&mm->mmap_lock);
 		return;
 	}
 
@@ -194,7 +194,7 @@ good_area:
 	 * Fix it, but check if it's kernel or user first..
 	 */
 bad_area:
-	up_read(&mm->mmap_sem);
+	up_read(&mm->mmap_lock);
 
 	/* User mode accesses just cause a SIGSEGV */
 	if (user_mode(regs)) {
@@ -218,7 +218,7 @@ no_context:
 	die("Oops", regs, address);
 
 out_of_memory:
-	up_read(&mm->mmap_sem);
+	up_read(&mm->mmap_lock);
 
 	if (user_mode(regs)) {
 		pagefault_out_of_memory();
@@ -228,7 +228,7 @@ out_of_memory:
 	goto no_context;
 
 do_sigbus:
-	up_read(&mm->mmap_sem);
+	up_read(&mm->mmap_lock);
 
 	if (!user_mode(regs))
 		goto no_context;

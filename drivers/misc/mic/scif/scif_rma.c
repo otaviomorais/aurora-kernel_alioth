@@ -277,16 +277,16 @@ __scif_dec_pinned_vm_lock(struct mm_struct *mm,
 	if (!mm || !nr_pages || !scif_ulimit_check)
 		return 0;
 	if (try_lock) {
-		if (!down_write_trylock(&mm->mmap_sem)) {
+		if (!down_write_trylock(&mm->mmap_lock)) {
 			dev_err(scif_info.mdev.this_device,
 				"%s %d err\n", __func__, __LINE__);
 			return -1;
 		}
 	} else {
-		down_write(&mm->mmap_sem);
+		down_write(&mm->mmap_lock);
 	}
 	mm->pinned_vm -= nr_pages;
-	up_write(&mm->mmap_sem);
+	up_write(&mm->mmap_lock);
 	return 0;
 }
 
@@ -1385,11 +1385,11 @@ int __scif_pin_pages(void *addr, size_t len, int *out_prot,
 		prot |= SCIF_PROT_WRITE;
 retry:
 		mm = current->mm;
-		down_write(&mm->mmap_sem);
+		down_write(&mm->mmap_lock);
 		if (ulimit) {
 			err = __scif_check_inc_pinned_vm(mm, nr_pages);
 			if (err) {
-				up_write(&mm->mmap_sem);
+				up_write(&mm->mmap_lock);
 				pinned_pages->nr_pages = 0;
 				goto error_unmap;
 			}
@@ -1401,7 +1401,7 @@ retry:
 				(prot & SCIF_PROT_WRITE) ? FOLL_WRITE : 0,
 				pinned_pages->pages,
 				NULL);
-		up_write(&mm->mmap_sem);
+		up_write(&mm->mmap_lock);
 		if (nr_pages != pinned_pages->nr_pages) {
 			if (pinned_pages->nr_pages < 0)
 				pinned_pages->nr_pages = 0;

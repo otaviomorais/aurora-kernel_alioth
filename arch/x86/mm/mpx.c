@@ -52,10 +52,10 @@ static unsigned long mpx_mmap(unsigned long len)
 	if (len != mpx_bt_size_bytes(mm))
 		return -EINVAL;
 
-	down_write(&mm->mmap_sem);
+	down_write(&mm->mmap_lock);
 	addr = do_mmap(NULL, 0, len, PROT_READ | PROT_WRITE,
 		       MAP_ANONYMOUS | MAP_PRIVATE, VM_MPX, 0, &populate, NULL);
-	up_write(&mm->mmap_sem);
+	up_write(&mm->mmap_lock);
 	if (populate)
 		mm_populate(addr, populate);
 
@@ -239,7 +239,7 @@ int mpx_enable_management(void)
 	 * unmap path; we can just use mm->context.bd_addr instead.
 	 */
 	bd_base = mpx_get_bounds_dir();
-	down_write(&mm->mmap_sem);
+	down_write(&mm->mmap_lock);
 
 	/* MPX doesn't support addresses above 47 bits yet. */
 	if (find_vma(mm, DEFAULT_MAP_WINDOW)) {
@@ -253,7 +253,7 @@ int mpx_enable_management(void)
 	if (mm->context.bd_addr == MPX_INVALID_BOUNDS_DIR)
 		ret = -ENXIO;
 out:
-	up_write(&mm->mmap_sem);
+	up_write(&mm->mmap_lock);
 	return ret;
 }
 
@@ -264,9 +264,9 @@ int mpx_disable_management(void)
 	if (!cpu_feature_enabled(X86_FEATURE_MPX))
 		return -ENXIO;
 
-	down_write(&mm->mmap_sem);
+	down_write(&mm->mmap_lock);
 	mm->context.bd_addr = MPX_INVALID_BOUNDS_DIR;
-	up_write(&mm->mmap_sem);
+	up_write(&mm->mmap_lock);
 	return 0;
 }
 

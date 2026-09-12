@@ -192,7 +192,7 @@ init: __maybe_unused
 		event->path.dentry = NULL;
 	}
 out:
-	memalloc_unuse_memcg();
+	set_active_memcg(old_memcg);
 	return event;
 }
 

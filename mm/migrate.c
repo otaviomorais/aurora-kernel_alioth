@@ -1513,7 +1513,7 @@ static int add_page_for_migration(struct mm_struct *mm, unsigned long addr,
 	unsigned int follflags;
 	int err;
 
-	down_read(&mm->mmap_sem);
+	down_read(&mm->mmap_lock);
 	err = -EFAULT;
 	vma = find_vma(mm, addr);
 	if (!vma || addr < vma->vm_start || !vma_migratable(vma))
@@ -1566,7 +1566,7 @@ out_putpage:
 	 */
 	put_page(page);
 out:
-	up_read(&mm->mmap_sem);
+	up_read(&mm->mmap_lock);
 	return err;
 }
 
@@ -1698,7 +1698,7 @@ static void do_pages_stat_array(struct mm_struct *mm, unsigned long nr_pages,
 {
 	unsigned long i;
 
-	down_read(&mm->mmap_sem);
+	down_read(&mm->mmap_lock);
 
 	for (i = 0; i < nr_pages; i++) {
 		unsigned long addr = (unsigned long)(*pages);
@@ -1725,7 +1725,7 @@ set_status:
 		status++;
 	}
 
-	up_read(&mm->mmap_sem);
+	up_read(&mm->mmap_lock);
 }
 
 /*

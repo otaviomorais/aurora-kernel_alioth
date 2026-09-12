@@ -86,7 +86,7 @@ int do_page_fault(struct pt_regs *regs, unsigned long address,
 	if (user_mode(regs))
 		flags |= FAULT_FLAG_USER;
 retry:
-	down_read(&mm->mmap_sem);
+	down_read(&mm->mmap_lock);
 
 	vma = find_vma(mm, address);
 	if (!vma)
@@ -168,7 +168,7 @@ good_area:
 			flags |= FAULT_FLAG_TRIED;
 
 			/*
-			 * No need to up_read(&mm->mmap_sem) as we would
+			 * No need to up_read(&mm->mmap_lock) as we would
 			 * have already released it in __lock_page_or_retry
 			 * in mm/filemap.c.
 			 */
@@ -177,7 +177,7 @@ good_area:
 		}
 	}
 
-	up_read(&mm->mmap_sem);
+	up_read(&mm->mmap_lock);
 	return 0;
 
 /*
@@ -185,7 +185,7 @@ good_area:
  * us unable to handle the page fault gracefully.
  */
 out_of_memory:
-	up_read(&mm->mmap_sem);
+	up_read(&mm->mmap_lock);
 	if (!user_mode(regs))
 		goto no_context;
 	pagefault_out_of_memory();
@@ -214,6 +214,6 @@ acc_err:
 	current->thread.faddr = address;
 
 send_sig:
-	up_read(&mm->mmap_sem);
+	up_read(&mm->mmap_lock);
 	return send_fault_sig(regs);
 }

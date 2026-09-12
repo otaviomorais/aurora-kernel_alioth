@@ -2,7 +2,7 @@
 VERSION = 4
 PATCHLEVEL = 19
 SUBLEVEL = 404
-EXTRAVERSION = -InfiniR_Alioth_KSUN_raystef66
+EXTRAVERSION = -Aurora
 NAME = "People's Front"
 
 # *DOCUMENTATION*

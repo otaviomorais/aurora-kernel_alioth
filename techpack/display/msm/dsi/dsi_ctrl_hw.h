@@ -888,6 +888,25 @@ struct dsi_ctrl_hw_ops {
 	 * @cmd_mode:	Boolean to indicate command mode operation.
 	 */
 	u32 (*log_line_count)(struct dsi_ctrl_hw *ctrl, bool cmd_mode);
+
+	/**
+	 * hw.ops.configure_cmddma_window() - configure DMA window for CMD TX
+	 * @ctrl:	Pointer to the controller host hardware.
+	 * @cmd:	Pointer to the DSI DMA command info.
+	 * @line_no:	Line number at which the CMD needs to be triggered.
+	 * @window:	Width of the DMA CMD window.
+	 */
+	void (*configure_cmddma_window)(struct dsi_ctrl_hw *ctrl,
+			struct dsi_ctrl_cmd_dma_info *cmd,
+			u32 line_no, u32 window);
+
+	/**
+	 * hw.ops.reset_trig_ctrl() - resets trigger control of DSI controller
+	 * @ctrl:	Pointer to the controller host hardware.
+	 * @cfg:	Common configuration parameters.
+	 */
+	void (*reset_trig_ctrl)(struct dsi_ctrl_hw *ctrl,
+			struct dsi_host_common_cfg *cfg);
 };
 
 /*

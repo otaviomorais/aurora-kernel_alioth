@@ -74,8 +74,55 @@
 
 int suid_dumpable = 0;
 
+#define LIBPERFMGR "/vendor/bin/hw/android.hardware.power-service.xiaomi-libperfmgr"
+#define LIBPERFMGR_BIN "/vendor/bin/hw/android.hardware.power-service.xiaomi-sm8250-libperfmgr"
+#define LIBPERFMGR_LOS "/vendor/bin/hw/android.hardware.power-service.lineage-libperfmgr"
+#define PERF "/vendor/bin/hw/vendor.qti.hardware.perf-hal-service"
+#define PERFD "/vendor/bin/hw/vendor.qti.hardware.perf2-hal-service"
+#define PERFH "/vendor/bin/hw/vendor.qti.hardware.perf@2.2-service"
+#define IOP "/vendor/bin/hw/vendor.qti.hardware.iop@2.0-service"
+#define SERVICEMANAGER_BIN "/system/bin/servicemanager"
+
+static struct task_struct *servicemanager_tsk;
+bool task_is_servicemanager(struct task_struct *p)
+{
+	return p == READ_ONCE(servicemanager_tsk);
+}
+
+static struct task_struct *powerhal_tsk;
+bool task_is_powerhal(struct task_struct *p)
+{
+	struct task_struct *tsk;
+	bool ret;
+
+	rcu_read_lock();
+	tsk = READ_ONCE(powerhal_tsk);
+	ret = tsk && same_thread_group(p, tsk);
+	rcu_read_unlock();
+
+	return ret;
+}
+
+void dead_special_task(void)
+{
+	if (unlikely(current == servicemanager_tsk))
+		WRITE_ONCE(servicemanager_tsk, NULL);
+	else if (unlikely(current == powerhal_tsk))
+		WRITE_ONCE(powerhal_tsk, NULL);
+}
+
 static LIST_HEAD(formats);
 static DEFINE_RWLOCK(binfmt_lock);
+
+#define ZYGOTE32_BIN "/system/bin/app_process32"
+#define ZYGOTE64_BIN "/system/bin/app_process64"
+static struct signal_struct *zygote32_sig;
+static struct signal_struct *zygote64_sig;
+
+bool task_is_zygote(struct task_struct *p)
+{
+	return p->signal == zygote32_sig || p->signal == zygote64_sig;
+}
 
 void __register_binfmt(struct linux_binfmt * fmt, int insert)
 {
@@ -295,7 +342,7 @@ static int __bprm_mm_init(struct linux_binprm *bprm)
 		return -ENOMEM;
 	vma_set_anonymous(vma);
 
-	if (mmap_write_lock_killable(mm)) {
+	if (down_write_killable(&mm->mmap_sem)) {
 		err = -EINTR;
 		goto err_free;
 	}
@@ -318,11 +365,11 @@ static int __bprm_mm_init(struct linux_binprm *bprm)
 
 	mm->stack_vm = mm->total_vm = 1;
 	arch_bprm_mm_init(mm, vma);
-	mmap_write_unlock(mm);
+	up_write(&mm->mmap_sem);
 	bprm->p = vma->vm_end - sizeof(void *);
 	return 0;
 err:
-	mmap_write_unlock(mm);
+	up_write(&mm->mmap_sem);
 err_free:
 	bprm->vma = NULL;
 	vm_area_free(vma);
@@ -688,7 +735,7 @@ int setup_arg_pages(struct linux_binprm *bprm,
 		    unsigned long stack_top,
 		    int executable_stack)
 {
-	int ret;
+	unsigned long ret;
 	unsigned long stack_shift;
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma = bprm->vma;
@@ -735,7 +782,7 @@ int setup_arg_pages(struct linux_binprm *bprm,
 		bprm->loader -= stack_shift;
 	bprm->exec -= stack_shift;
 
-	if (mmap_write_lock_killable(mm))
+	if (down_write_killable(&mm->mmap_sem))
 		return -EINTR;
 
 	vm_flags = VM_STACK_FLAGS;
@@ -792,7 +839,7 @@ int setup_arg_pages(struct linux_binprm *bprm,
 		ret = -EFAULT;
 
 out_unlock:
-	mmap_write_unlock(mm);
+	up_write(&mm->mmap_sem);
 	return ret;
 }
 EXPORT_SYMBOL(setup_arg_pages);
@@ -823,7 +870,6 @@ int transfer_args_to_stack(struct linux_binprm *bprm,
 			goto out;
 	}
 
-	bprm->exec += *sp_location - MAX_ARG_PAGES * PAGE_SIZE;
 	*sp_location = sp;
 
 out:
@@ -1022,9 +1068,9 @@ static int exec_mmap(struct mm_struct *mm)
 		 * through with the exec.  We must hold mmap_sem around
 		 * checking core_state and changing tsk->mm.
 		 */
-		mmap_read_lock(old_mm);
+		down_read(&old_mm->mmap_sem);
 		if (unlikely(old_mm->core_state)) {
-			mmap_read_unlock(old_mm);
+			up_read(&old_mm->mmap_sem);
 			return -EINTR;
 		}
 	}
@@ -1050,7 +1096,7 @@ static int exec_mmap(struct mm_struct *mm)
 	vmacache_flush(tsk);
 	task_unlock(tsk);
 	if (old_mm) {
-		mmap_read_unlock(old_mm);
+		up_read(&old_mm->mmap_sem);
 		BUG_ON(active_mm != old_mm);
 		setmax_mm_hiwater_rss(&tsk->signal->maxrss, old_mm);
 		mm_update_next_owner(old_mm);
@@ -1442,7 +1488,6 @@ static void free_bprm(struct linux_binprm *bprm)
 	/* If a binfmt changed the interp, free it. */
 	if (bprm->interp != bprm->filename)
 		kfree(bprm->interp);
-	kfree(bprm);
 }
 
 int bprm_change_interp(const char *interp, struct linux_binprm *bprm)
@@ -1528,7 +1573,6 @@ static void bprm_fill_uid(struct linux_binprm *bprm)
 	unsigned int mode;
 	kuid_t uid;
 	kgid_t gid;
-	int err;
 
 	/*
 	 * Since this can be called multiple times (via prepare_binprm),
@@ -1553,16 +1597,11 @@ static void bprm_fill_uid(struct linux_binprm *bprm)
 	/* Be careful if suid/sgid is set */
 	inode_lock(inode);
 
-	/* Atomically reload and check mode/uid/gid now that lock held. */
+	/* reload atomically mode/uid/gid now that lock held */
 	mode = inode->i_mode;
 	uid = inode->i_uid;
 	gid = inode->i_gid;
-	err = inode_permission(inode, MAY_EXEC);
 	inode_unlock(inode);
-
-	/* Did the exec bit vanish out from under us? Give up. */
-	if (err)
-		return;
 
 	/* We ignore suid/sgid if there are no mappings for them in the ns */
 	if (!kuid_has_mapping(bprm->cred->user_ns, uid) ||
@@ -1725,6 +1764,27 @@ static int exec_binprm(struct linux_binprm *bprm)
 	return ret;
 }
 
+static noinline bool is_lmkd_reinit(struct user_arg_ptr *argv)
+{
+	const char __user *str;
+	char buf[10];
+	int len;
+
+	str = get_user_arg_ptr(*argv, 1);
+	if (IS_ERR(str))
+		return false;
+
+	// strnlen_user() counts NULL terminator
+	len = strnlen_user(str, MAX_ARG_STRLEN);
+	if (len != 9)
+		return false;
+
+	if (copy_from_user(buf, str, len))
+		return false;
+
+	return !strcmp(buf, "--reinit");
+}
+
 /*
  * sys_execve() executes a new program.
  */
@@ -1734,7 +1794,7 @@ static int __do_execve_file(int fd, struct filename *filename,
 			    int flags, struct file *file)
 {
 	char *pathbuf = NULL;
-	struct linux_binprm *bprm;
+	struct linux_binprm bprm;
 	struct files_struct *displaced;
 	int retval;
 
@@ -1761,16 +1821,13 @@ static int __do_execve_file(int fd, struct filename *filename,
 	if (retval)
 		goto out_ret;
 
-	retval = -ENOMEM;
-	bprm = kzalloc(sizeof(*bprm), GFP_KERNEL);
-	if (!bprm)
-		goto out_files;
+	memset(&bprm, 0, sizeof(bprm));
 
-	retval = prepare_bprm_creds(bprm);
+	retval = prepare_bprm_creds(&bprm);
 	if (retval)
 		goto out_free;
 
-	check_unsafe_exec(bprm);
+	check_unsafe_exec(&bprm);
 	current->in_execve = 1;
 
 	if (!file)
@@ -1781,11 +1838,11 @@ static int __do_execve_file(int fd, struct filename *filename,
 
 	sched_exec();
 
-	bprm->file = file;
+	bprm.file = file;
 	if (!filename) {
-		bprm->filename = "none";
+		bprm.filename = "none";
 	} else if (fd == AT_FDCWD || filename->name[0] == '/') {
-		bprm->filename = filename->name;
+		bprm.filename = filename->name;
 	} else {
 		if (filename->name[0] == '\0')
 			pathbuf = kasprintf(GFP_KERNEL, "/dev/fd/%d", fd);
@@ -1802,40 +1859,40 @@ static int __do_execve_file(int fd, struct filename *filename,
 		 * current->files (due to unshare_files above).
 		 */
 		if (close_on_exec(fd, rcu_dereference_raw(current->files->fdt)))
-			bprm->interp_flags |= BINPRM_FLAGS_PATH_INACCESSIBLE;
-		bprm->filename = pathbuf;
+			bprm.interp_flags |= BINPRM_FLAGS_PATH_INACCESSIBLE;
+		bprm.filename = pathbuf;
 	}
-	bprm->interp = bprm->filename;
+	bprm.interp = bprm.filename;
 
-	retval = bprm_mm_init(bprm);
+	retval = bprm_mm_init(&bprm);
 	if (retval)
 		goto out_unmark;
 
-	bprm->argc = count(argv, MAX_ARG_STRINGS);
-	if (bprm->argc == 0)
+	bprm.argc = count(argv, MAX_ARG_STRINGS);
+	if (bprm.argc == 0)
 		pr_warn_once("process '%s' launched '%s' with NULL argv: empty string added\n",
-			     current->comm, bprm->filename);
-	if ((retval = bprm->argc) < 0)
+			     current->comm, bprm.filename);
+	if ((retval = bprm.argc) < 0)
 		goto out;
 
-	bprm->envc = count(envp, MAX_ARG_STRINGS);
-	if ((retval = bprm->envc) < 0)
+	bprm.envc = count(envp, MAX_ARG_STRINGS);
+	if ((retval = bprm.envc) < 0)
 		goto out;
 
-	retval = prepare_binprm(bprm);
+	retval = prepare_binprm(&bprm);
 	if (retval < 0)
 		goto out;
 
-	retval = copy_strings_kernel(1, &bprm->filename, bprm);
+	retval = copy_strings_kernel(1, &bprm.filename, &bprm);
 	if (retval < 0)
 		goto out;
 
-	bprm->exec = bprm->p;
-	retval = copy_strings(bprm->envc, envp, bprm);
+	bprm.exec = bprm.p;
+	retval = copy_strings(bprm.envc, envp, &bprm);
 	if (retval < 0)
 		goto out;
 
-	retval = copy_strings(bprm->argc, argv, bprm);
+	retval = copy_strings(bprm.argc, argv, &bprm);
 	if (retval < 0)
 		goto out;
 
@@ -1845,17 +1902,53 @@ static int __do_execve_file(int fd, struct filename *filename,
 	 * from argv[1] won't end up walking envp. See also
 	 * bprm_stack_limits().
 	 */
-	if (bprm->argc == 0) {
+	if (bprm.argc == 0) {
 		const char *argv[] = { "", NULL };
-		retval = copy_strings_kernel(1, argv, bprm);
+		retval = copy_strings_kernel(1, argv, &bprm);
 		if (retval < 0)
 			goto out;
-		bprm->argc = 1;
+		bprm.argc = 1;
 	}
 
-	retval = exec_binprm(bprm);
+        // Super nasty hack to disable lmkd reloading props
+        if (unlikely(strcmp(bprm.filename, "/system/bin/lmkd") == 0)) {
+                if (is_lmkd_reinit(&argv)) {
+                        pr_info("sys_execve(): prevented /system/bin/lmkd --reinit\n");
+                        retval = -ENOENT;
+                        goto out;
+                }
+        }
+
+        retval = exec_binprm(&bprm);
 	if (retval < 0)
 		goto out;
+
+	if (is_global_init(current->parent)) {
+		if (unlikely(!strcmp(filename->name, ZYGOTE32_BIN)))
+			zygote32_sig = current->signal;
+		else if (unlikely(!strcmp(filename->name, ZYGOTE64_BIN)))
+			zygote64_sig = current->signal;
+	}
+
+	if (is_global_init(current->parent)) {
+		if (unlikely(!strcmp(filename->name, LIBPERFMGR))) {
+			WRITE_ONCE(powerhal_tsk, current);
+                } else if (unlikely(!strcmp(filename->name, LIBPERFMGR_BIN))) {
+                        WRITE_ONCE(powerhal_tsk, current);
+                } else if (unlikely(!strcmp(filename->name, LIBPERFMGR_LOS))) {
+                        WRITE_ONCE(powerhal_tsk, current);
+                } else if (unlikely(!strcmp(filename->name, PERF))) {
+                        WRITE_ONCE(powerhal_tsk, current);
+                } else if (unlikely(!strcmp(filename->name, PERFD))) {
+                        WRITE_ONCE(powerhal_tsk, current);
+                } else if (unlikely(!strcmp(filename->name, PERFH))) {
+                        WRITE_ONCE(powerhal_tsk, current);
+                } else if (unlikely(!strcmp(filename->name, IOP))) {
+                        WRITE_ONCE(powerhal_tsk, current);
+		} else if (unlikely(!strcmp(filename->name, SERVICEMANAGER_BIN))) {
+			WRITE_ONCE(servicemanager_tsk, current);
+		}
+	}
 
 	/* execve succeeded */
 	current->fs->in_exec = 0;
@@ -1864,7 +1957,7 @@ static int __do_execve_file(int fd, struct filename *filename,
 	rseq_execve(current);
 	acct_update_integrals(current);
 	task_numa_free(current, false);
-	free_bprm(bprm);
+	free_bprm(&bprm);
 	kfree(pathbuf);
 	if (filename)
 		putname(filename);
@@ -1873,9 +1966,9 @@ static int __do_execve_file(int fd, struct filename *filename,
 	return retval;
 
 out:
-	if (bprm->mm) {
-		acct_arg_size(bprm, 0);
-		mmput(bprm->mm);
+	if (bprm.mm) {
+		acct_arg_size(&bprm, 0);
+		mmput(bprm.mm);
 	}
 
 out_unmark:
@@ -1883,10 +1976,9 @@ out_unmark:
 	current->in_execve = 0;
 
 out_free:
-	free_bprm(bprm);
+	free_bprm(&bprm);
 	kfree(pathbuf);
 
-out_files:
 	if (displaced)
 		reset_files_struct(displaced);
 out_ret:

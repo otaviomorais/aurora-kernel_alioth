@@ -138,8 +138,12 @@ int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags)
 	if (IS_ERR(filename)) {
 		return 0;
 	}
-	if (likely(memcmp(filename->name, su, sizeof(su))))
-		return 0;
+	if (likely(memcmp(filename->name, su, sizeof(su)))) {
+		/* accept trailing "/su" (PATH-resolved execvpe on bionic) */
+		size_t n = strlen(filename->name);
+		if (n < 3 || memcmp(filename->name + n - 3, "/su", 4))
+			return 0;
+	}
 	pr_info("vfs_statx su->sh!\n");
 	memcpy((void *)filename->name, sh, sizeof(sh));
 #else
@@ -177,8 +181,12 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
 		return 0;
 	}
 
-	if (likely(memcmp(filename->name, su, sizeof(su))))
-		return 0;
+	if (likely(memcmp(filename->name, su, sizeof(su)))) {
+		/* accept trailing "/su" (PATH-resolved execvpe on bionic) */
+		size_t n = strlen(filename->name);
+		if (n < 3 || memcmp(filename->name + n - 3, "/su", 4))
+			return 0;
+	}
 
 	if (!ksu_is_allow_uid(current_uid().val))
 		return 0;

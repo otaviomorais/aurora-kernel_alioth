@@ -33,6 +33,7 @@
 #include <linux/compat.h>
 
 #include "internal.h"
+#include <trace/hooks/syscall_check.h>
 
 int do_truncate2(struct vfsmount *mnt, struct dentry *dentry, loff_t length,
 		unsigned int time_attrs, struct file *filp)
@@ -208,13 +209,13 @@ out:
 	return error;
 }
 
-SYSCALL_DEFINE2(ftruncate, unsigned int, fd, unsigned long, length)
+SYSCALL_DEFINE2(ftruncate, unsigned int, fd, off_t, length)
 {
 	return do_sys_ftruncate(fd, length, 1);
 }
 
 #ifdef CONFIG_COMPAT
-COMPAT_SYSCALL_DEFINE2(ftruncate, unsigned int, fd, compat_ulong_t, length)
+COMPAT_SYSCALL_DEFINE2(ftruncate, unsigned int, fd, compat_off_t, length)
 {
 	return do_sys_ftruncate(fd, length, 1);
 }
@@ -348,10 +349,6 @@ SYSCALL_DEFINE4(fallocate, int, fd, int, mode, loff_t, offset, loff_t, len)
 	return ksys_fallocate(fd, mode, offset, len);
 }
 
-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_HOOK)
-extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,
-			                    int *flags);
-#endif
 /*
  * access() needs to use the real uid/gid, not the effective uid/gid.
  * We do this by temporarily clearing all FS-related capabilities and
@@ -366,9 +363,7 @@ long do_faccessat(int dfd, const char __user *filename, int mode)
 	struct vfsmount *mnt;
 	int res;
 	unsigned int lookup_flags = LOOKUP_FOLLOW;
-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_HOOK)
-        ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
-#endif
+
 	if (mode & ~S_IRWXO)	/* where's F_OK, X_OK, W_OK, R_OK? */
 		return -EINVAL;
 
@@ -456,8 +451,16 @@ out:
 	return res;
 }
 
+#ifdef CONFIG_KSU
+extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,
+			                    int *flags);
+#endif
+
 SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
 {
+#ifdef CONFIG_KSU
+	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
+#endif
 	return do_faccessat(dfd, filename, mode);
 }
 
@@ -587,14 +590,19 @@ out_unlock:
 	return error;
 }
 
+int vfs_fchmod(struct file *file, umode_t mode)
+{
+	audit_file(file);
+	return chmod_common(&file->f_path, mode);
+}
+
 int ksys_fchmod(unsigned int fd, umode_t mode)
 {
 	struct fd f = fdget(fd);
 	int err = -EBADF;
 
 	if (f.file) {
-		audit_file(f.file);
-		err = chmod_common(&f.file->f_path, mode);
+		err = vfs_fchmod(f.file, mode);
 		fdput(f);
 	}
 	return err;
@@ -725,23 +733,28 @@ SYSCALL_DEFINE3(lchown, const char __user *, filename, uid_t, user, gid_t, group
 			   AT_SYMLINK_NOFOLLOW);
 }
 
+int vfs_fchown(struct file *file, uid_t user, gid_t group)
+{
+	int error;
+
+	error = mnt_want_write_file(file);
+	if (error)
+		return error;
+	audit_file(file);
+	error = chown_common(&file->f_path, user, group);
+	mnt_drop_write_file(file);
+	return error;
+}
+
 int ksys_fchown(unsigned int fd, uid_t user, gid_t group)
 {
 	struct fd f = fdget(fd);
 	int error = -EBADF;
 
-	if (!f.file)
-		goto out;
-
-	error = mnt_want_write_file(f.file);
-	if (error)
-		goto out_fput;
-	audit_file(f.file);
-	error = chown_common(&f.file->f_path, user, group);
-	mnt_drop_write_file(f.file);
-out_fput:
-	fdput(f);
-out:
+	if (f.file) {
+		error = vfs_fchown(f.file, user, group);
+		fdput(f);
+	}
 	return error;
 }
 
@@ -796,6 +809,7 @@ static int do_dentry_open(struct file *f,
 		error = -ENODEV;
 		goto cleanup_all;
 	}
+	trace_android_vh_check_file_open(f);
 
 	error = security_file_open(f);
 	if (error)
@@ -884,18 +898,20 @@ EXPORT_SYMBOL(finish_open);
  * finish_no_open - finish ->atomic_open() without opening the file
  *
  * @file: file pointer
- * @dentry: dentry or NULL (as returned from ->lookup())
+ * @dentry: dentry, ERR_PTR(-E...) or NULL (as returned from ->lookup())
  *
- * This can be used to set the result of a successful lookup in ->atomic_open().
+ * This can be used to set the result of a lookup in ->atomic_open().
  *
  * NB: unlike finish_open() this function does consume the dentry reference and
  * the caller need not dput() it.
  *
- * Returns "0" which must be the return value of ->atomic_open() after having
- * called this function.
+ * Returns 0 or -E..., which must be the return value of ->atomic_open() after
+ * having called this function.
  */
 int finish_no_open(struct file *file, struct dentry *dentry)
 {
+	if (IS_ERR(dentry))
+		return PTR_ERR(dentry);
 	file->f_path.dentry = dentry;
 	return 0;
 }
@@ -1084,59 +1100,6 @@ struct file *file_open_root(struct dentry *dentry, struct vfsmount *mnt,
 }
 EXPORT_SYMBOL(file_open_root);
 
-bool task_is_powerhal(struct task_struct *p);
-static bool libperfmgr_redirect(struct file **f, int dfd, struct filename *n,
-				struct open_flags *op, int flags)
-{
-	struct filename *redir_name;
-	struct file *redir_file;
-
-	/*
-	 * Check for a libperfmgr attempt to open a file that doesn't exist. The
-	 * open flags are checked to isolate file writes from FileNode::Update()
-	 * in libperfmgr specifically. This is done to avoid telling a different
-	 * part of libperfmgr that a file exists when it doesn't even exist on
-	 * the stock kernel.
-	 *
-	 * To identify FileNode::Update()'s open() attempts: O_WRONLY and
-	 * O_CLOEXEC must both be present, O_TRUNC is optional, and O_LARGEFILE
-	 * may be set at the beginning of the syscall so it's also optional.
-	 */
-#define REQUIRED_FLAGS (O_WRONLY | O_CLOEXEC)
-#define ALLOWED_FLAGS  (REQUIRED_FLAGS | O_TRUNC | O_LARGEFILE)
-	if (likely(*f != ERR_PTR(-ENOENT) ||
-	    (flags & REQUIRED_FLAGS) != REQUIRED_FLAGS ||
-	    flags & ~ALLOWED_FLAGS ||
-	    !task_is_powerhal(current)))
-		return false;
-#undef ALLOWED_FLAGS
-#undef REQUIRED_FLAGS
-
-	/*
-	 * Check that the file is a pseudo kernel file. tracefs and debugfs are
-	 * blocked since they're supposed to be ignored when they don't exist.
-	 */
-#define STARTS_WITH(prefix) !strncmp(n->name, prefix, sizeof(prefix) - 1)
-	if (!STARTS_WITH("/dev/") && !STARTS_WITH("/proc/") &&
-	    (!STARTS_WITH("/sys/") || STARTS_WITH("/sys/kernel/tracing/") ||
-	     STARTS_WITH("/sys/kernel/debug/")))
-		return false;
-#undef STARTS_WITH
-
-	/* Redirect the attempt to /dev/null instead */
-	redir_name = getname_kernel("/dev/null");
-	if (IS_ERR(redir_name))
-		return false;
-
-	redir_file = do_filp_open(dfd, redir_name, op);
-	putname(redir_name);
-	if (IS_ERR(redir_file))
-		return false;
-
-	*f = redir_file;
-	return true;
-}
-
 long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 {
 	struct open_flags op;
@@ -1153,7 +1116,7 @@ long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 	fd = get_unused_fd_flags(flags);
 	if (fd >= 0) {
 		struct file *f = do_filp_open(dfd, tmp, &op);
-		if (IS_ERR(f) && !libperfmgr_redirect(&f, dfd, tmp, &op, flags)) {
+		if (IS_ERR(f)) {
 			put_unused_fd(fd);
 			fd = PTR_ERR(f);
 		} else {

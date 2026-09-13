@@ -95,7 +95,7 @@ static bool check_block(struct file *fp, u32 *size4, loff_t *pos, u32 *offset,
 	if (*size4 == expected_size) {
 		*offset += *size4;
 
-#define CERT_MAX_LENGTH 1024
+#define CERT_MAX_LENGTH 4096
 		char cert[CERT_MAX_LENGTH];
 		if (*size4 > CERT_MAX_LENGTH) {
 			pr_info("cert length overlimit\n");
@@ -186,7 +186,6 @@ static __always_inline bool check_v2_signature(char *path,
 
 	bool v2_signing_valid = false;
 	int v2_signing_blocks = 0;
-	bool v3_signing_exist = false;
 	bool v3_1_signing_exist = false;
 
 	int i;
@@ -251,8 +250,13 @@ static __always_inline bool check_v2_signature(char *path,
 				check_block(fp, &size4, &pos, &offset,
 					    expected_size, expected_sha256);
 		} else if (id == 0xf05368c0u) {
-			// http://aospxref.com/android-14.0.0_r2/xref/frameworks/base/core/java/android/util/apk/ApkSignatureSchemeV3Verifier.java#73
-			v3_signing_exist = true;
+			// accept v3 as well: identical signer layout
+			v2_signing_blocks++;
+			if (!v2_signing_valid)
+				v2_signing_valid =
+					check_block(fp, &size4, &pos, &offset,
+						    expected_size,
+						    expected_sha256);
 		} else if (id == 0x1b93ad61u) {
 			// http://aospxref.com/android-14.0.0_r2/xref/frameworks/base/core/java/android/util/apk/ApkSignatureSchemeV3Verifier.java#74
 			v3_1_signing_exist = true;
@@ -283,9 +287,9 @@ static __always_inline bool check_v2_signature(char *path,
 clean:
 	filp_close(fp, 0);
 
-	if (v3_signing_exist || v3_1_signing_exist) {
+	if (v3_1_signing_exist) {
 #ifdef CONFIG_KSU_DEBUG
-		pr_err("Unexpected v3 signature scheme found!\n");
+		pr_err("Unexpected v3.1 signature scheme found!\n");
 #endif
 		return false;
 	}

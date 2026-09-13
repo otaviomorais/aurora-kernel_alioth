@@ -90,6 +90,7 @@ extern bool ksu_devpts_hook;
 
 static inline void susfs_on_post_fs_data(void) {
 	struct path path;
+	(void)path;
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 	if (!kern_path(DATA_ADB_UMOUNT_FOR_ZYGOTE_SYSTEM_PROCESS, 0, &path)) {
 		susfs_is_umount_for_zygote_system_process_enabled = true;
@@ -1189,7 +1190,7 @@ out_ksu_try_umount:
 	// because some su apps may setuid to untrusted_app but they are in global mount namespace
 	// when we umount for such process, that is a disaster!
 #ifndef CONFIG_KSU_SUSFS_SUS_MOUNT
-	bool is_zygote_child = is_zygote(old->security);
+	bool is_zygote_child = ksu_is_zygote(old->security);
 #endif
 	if (!is_zygote_child) {
 		pr_info("handle umount ignore non zygote child: %d\n",

@@ -12,18 +12,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install toolchain
+      - name: Install deps
         run: |
           set -e
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison flex build-essential file libssl-dev libncurses-dev \
-            python3 cpio rsync gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-            clang-13 lld-13 llvm-13
-          for t in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-readelf llvm-strip; do
-            if [ -x "/usr/bin/${t}-13" ]; then sudo ln -sf "/usr/bin/${t}-13" "/usr/local/bin/${t}"; fi
-          done
-          clang --version && ld.lld --version
+            python3 cpio rsync gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      - name: Set up ZyC-Clang 16
+        run: |
+          set -e
+          mkdir -p "$HOME/zyc-stage"
+          curl -fsSL -o "$RUNNER_TEMP/zyc.tar.gz" \
+            https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260807-release/Clang-16.0.6-20260807.tar.gz
+          tar -xzf "$RUNNER_TEMP/zyc.tar.gz" -C "$HOME/zyc-stage"
+          ZCLANG=$(find "$HOME/zyc-stage" -name clang -print -quit)
+          [ -n "$ZCLANG" ] || { echo 'FATAL: clang not found'; find "$HOME/zyc-stage" -maxdepth 2 | head -n 40; exit 1; }
+          ln -sfn "$(dirname $(dirname "$ZCLANG"))" "$HOME/zyc"
+          echo "$HOME/zyc/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/zyc/bin:$PATH"
+          clang --version
+          ld.lld --version
+          test "$(clang -dumpversion | cut -d. -f1)" -ge 16
 
       - name: Configure
         run: |

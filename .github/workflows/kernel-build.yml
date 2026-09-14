@@ -1,0 +1,55 @@
+name: Kernel build
+
+on:
+  push:
+    branches: [aurora-root]
+    paths-ignore: ['**.md']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex build-essential file libssl-dev libncurses-dev \
+            python3 cpio rsync gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            clang-13 lld-13 llvm-13
+          for t in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-readelf llvm-strip; do
+            if [ -x "/usr/bin/${t}-13" ]; then sudo ln -sf "/usr/bin/${t}-13" "/usr/local/bin/${t}"; fi
+          done
+          clang --version && ld.lld --version
+
+      - name: Configure
+        run: |
+          make -j$(nproc) O=out ARCH=arm64 SUBARCH=arm64 \
+            CC=clang AS=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy STRIP=llvm-strip LLVM=1 LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            alioth_defconfig
+
+      - name: Build
+        run: |
+          make -j$(nproc) O=out ARCH=arm64 SUBARCH=arm64 \
+            CC=clang AS=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy STRIP=llvm-strip LLVM=1 LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            Image dtbs
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp out/arch/arm64/boot/Image dist/Image
+          cp out/.config dist/kernel-config
+          cd out && find arch/arm64/boot/dts -name '*.dtb' | tar -czf ../dist/dtbs.tar.gz -T -
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aurora-alioth-build
+          path: dist/
+          if-no-files-found: error

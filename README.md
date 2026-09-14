@@ -36,3 +36,14 @@ git fetch lq lineage-20;   git merge lq/lineage-20     # historically zero confl
 # re-verify: drivers/kernelsu fs hooks still apply, defconfig KSU/SUSFS/DROIDSPACES lines intact
 make ... alioth_defconfig && make ... -j16             # then package + flash-test
 ```
+
+## EEVDF experiment (closed)
+`d1aznr/kernel_xiaomi_alioth@eevdf` ships EEVDF on android14-common r0.111. Two findings:
+1. The series does not rebase onto our aosp-16 Lineage base (the kernel/sched
+   there expects the full common tree: tlb_migrate_finish, PF_PERF_CRITICAL, etc.).
+2. Flashed the branch as-is (built with proton-13, BPF_JIT stub for their MODULES=n):
+   boots to 30s, then A16 `netbpfload` fails: `BTF loading error: -22` →
+   bpfloader `reboot_on_failure`. The common tree lacks CONFIG_DEBUG_INFO_BTF
+   and the A16 bpf backports that Lineage aosp-16 carries.
+=> EEVDF on this device requires the A16-userspace-compatible base we already
+   use (or porting the whole bpf/BTF stack). Kept as CFS.

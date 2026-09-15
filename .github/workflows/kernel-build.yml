@@ -5,6 +5,19 @@ on:
     branches: [aurora-root]
     paths-ignore: ['**.md']
   workflow_dispatch:
+    inputs:
+      ak3_template_tag:
+        description: 'Release tag providing the AnyKernel3 template (tools/, META-INF/, anykernel.sh)'
+        required: false
+        default: 'aurora-v3.13'
+
+env:
+  AK3_TEMPLATE_TAG: ${{ github.event.inputs.ak3_template_tag || 'aurora-v3.13' }}
+  BUILD_FLAGS: >-
+    ARCH=arm64 SUBARCH=arm64
+    CC=clang AS=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
+    OBJCOPY=llvm-objcopy STRIP=llvm-strip LLVM=1 LLVM_IAS=1
+    CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 jobs:
   build:
@@ -18,7 +31,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison flex build-essential file libssl-dev libncurses-dev \
-            python3 cpio rsync gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+            python3 cpio rsync zip unzip jq \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
       - name: Set up ZyC-Clang 16
         run: |
@@ -37,30 +51,79 @@ jobs:
           test "$(clang -dumpversion | cut -d. -f1)" -ge 16
 
       - name: Configure
-        run: |
-          make -j$(nproc) O=out ARCH=arm64 SUBARCH=arm64 \
-            CC=clang AS=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy STRIP=llvm-strip LLVM=1 LLVM_IAS=1 \
-            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            alioth_defconfig
+        run: make -j$(nproc) O=out $BUILD_FLAGS alioth_defconfig
 
-      - name: Build
-        run: |
-          make -j$(nproc) O=out ARCH=arm64 SUBARCH=arm64 \
-            CC=clang AS=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy STRIP=llvm-strip LLVM=1 LLVM_IAS=1 \
-            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            Image dtbs
+      - name: Build (Image, dtbs, dtbo.img)
+        run: make -j$(nproc) O=out $BUILD_FLAGS Image dtbs dtbo.img
 
-      - name: Package
+      - name: Config gate - fail fast on stale/lost configs
         run: |
+          set -e
+          cd out
+          REQUIRED='
+          CONFIG_KSU=y
+          CONFIG_KSU_LSM_SECURITY_HOOKS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_SU=y
+          CONFIG_PROC_CHILDREN=y
+          CONFIG_FHANDLE=y
+          CONFIG_PID_NS=y
+          CONFIG_LTO_CLANG=y
+          CONFIG_CFI_CLANG=y
+          CONFIG_ZRAM_WRITEBACK=y
+          CONFIG_ANON_MIN_KBYTES=204800
+          CONFIG_CLEAN_LOW_KBYTES=393216
+          CONFIG_CLEAN_MIN_KBYTES=131072
+          '
+          MISSING=0
+          for s in $REQUIRED; do
+            grep -qx "$s" .config || { echo "MISSING: $s"; MISSING=1; }
+          done
+          [ "$MISSING" = 0 ] || { echo 'FATAL: .config lost required symbols (stale out/? regenerate with make O=out alioth_defconfig)'; exit 1; }
+          echo 'config gate OK'
+
+      - name: Assemble dtb / dtbo artifacts
+        run: |
+          set -e
           mkdir -p dist
-          cp out/arch/arm64/boot/Image dist/Image
+          # same recipe as AndroidKernel.mk: alphabetical cat of built base dtbs
+          cat out/arch/arm64/boot/dts/vendor/qcom/*.dtb > dist/dtb
+          test -s dist/dtb
+          test -s out/arch/arm64/boot/dtbo.img
+          cp out/arch/arm64/boot/dtbo.img dist/dtbo.img
           cp out/.config dist/kernel-config
-          cd out && find arch/arm64/boot/dts -name '*.dtb' | tar -czf ../dist/dtbs.tar.gz -T -
+
+      - name: Fetch AnyKernel3 template from release
+        run: |
+          set -e
+          URL=$(curl -fsSL "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$AK3_TEMPLATE_TAG" \
+            | jq -r '.assets[0].browser_download_url')
+          [ "$URL" != "null" ] && [ -n "$URL" ] || { echo "FATAL: no asset on tag $AK3_TEMPLATE_TAG"; exit 1; }
+          echo "template: $URL"
+          curl -fsSL -o "$RUNNER_TEMP/ak3-template.zip" "$URL"
+          mkdir -p ak3
+          unzip -q "$RUNNER_TEMP/ak3-template.zip" -d ak3
+          test -f ak3/anykernel.sh
+          test -f ak3/tools/ak3-core.sh
+          test -f ak3/META-INF/com/google/android/update-binary
+
+      - name: Package flashable zip
+        run: |
+          set -e
+          cp out/arch/arm64/boot/Image ak3/Image
+          cp dist/dtb ak3/dtb
+          cp dist/dtbo.img ak3/dtbo.img
+          OUT_ZIP="AURORA-${GITHUB_SHA:0:7}-EVOX.zip"
+          echo "OUT_ZIP=$OUT_ZIP" >> "$GITHUB_ENV"
+          cd ak3
+          chmod 755 META-INF/com/google/android/update-binary
+          zip -r -X "../dist/$OUT_ZIP" .
+          cd ..
+          unzip -l "dist/$OUT_ZIP"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: aurora-alioth-build
+          name: aurora-alioth-flashable
           path: dist/
           if-no-files-found: error

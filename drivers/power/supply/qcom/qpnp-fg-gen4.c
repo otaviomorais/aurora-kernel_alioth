@@ -2083,7 +2083,10 @@ static int fg_gen4_get_batt_profile(struct fg_dev *fg)
 	const char *data;
 	int rc, len, avail_age_level = 0;
 
-	batt_node = of_find_node_by_name(node, "qcom,battery-data");
+	batt_node = of_parse_phandle(node, "qcom,battery-data", 0);
+	/* Retain legacy trees without an explicit battery-data reference. */
+	if (!batt_node && !of_find_property(node, "qcom,battery-data", NULL))
+		batt_node = of_find_node_by_name(node, "qcom,battery-data");
 	if (!batt_node) {
 		pr_err("Batterydata not available\n");
 		return -ENXIO;
@@ -2138,21 +2141,22 @@ static int fg_gen4_get_batt_profile(struct fg_dev *fg)
 				else
 					profile_node = of_batterydata_get_best_profile(batt_node,
 							fg->batt_id_ohms / 1000, "K11A_FMT_4520mah");
-			}  else {
-				retry_batt_profile++;
 			}
-		} else if (!fg->profile_already_find) {
-			retry_batt_profile++;
 		}
+
+		/* A recognized vendor may name a profile absent from this DT. */
+		if (!fg->profile_already_find && IS_ERR_OR_NULL(profile_node))
+			retry_batt_profile++;
 
 		if (retry_batt_profile < BATT_PROFILE_RETRY_COUNT_MAX
 				&& !fg->profile_already_find) {
-			if (profile_node == ERR_PTR(-ENXIO)) {
+			if (IS_ERR_OR_NULL(profile_node)) {
 				pr_warn("verifty battery fail. recheck after, retry:%d\n",
 					retry_batt_profile);
 				schedule_delayed_work(&fg->profile_load_work, 500);
 			}
-		} else if (!fg->profile_already_find) {
+		} else if (!fg->profile_already_find && IS_ERR_OR_NULL(profile_node)) {
+			/* Never replace a successfully identified pack with a fallback. */
 			if (!chip->dt.sun_profile_only) {
 				pr_warn("verifty battery fail. use default profile j2gybm4n_4780mah\n");
 				profile_node = of_batterydata_get_best_profile(batt_node,

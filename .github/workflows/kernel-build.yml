@@ -12,7 +12,7 @@ on:
         default: 'aurora-v3.13'
 
 env:
-  AK3_TEMPLATE_TAG: ${{ github.event.inputs.ak3_template_tag || 'aurora-v3.13' }}
+  AK3_TEMPLATE_TAG: ${{ github.event.inputs.ak3_template_tag || 'aurora-2.0' }}
   BUILD_FLAGS: >-
     ARCH=arm64 SUBARCH=arm64
     CC=clang AS=clang LD=ld.lld AR=llvm-ar NM=llvm-nm

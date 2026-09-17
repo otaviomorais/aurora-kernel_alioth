@@ -622,7 +622,7 @@ And public attribution of xiaomi platforms(like alioth and so and)
 	 * allowing bounded estimates of usable full-charge capacity.
 	 */
 	qcom,replacement-capacity-learning;
-	qcom,replacement-battery-type = "K11A_REPLACEMENT_SAFE";
+	qcom,replacement-battery-type = "K11A_custom";
 	qcom,replacement-capacity-max-mah = <5300>;
 	qcom,replacement-cl-max-increment = <20>;
 	qcom,soc_decimal_rate = <
@@ -694,7 +694,7 @@ And public attribution of xiaomi platforms(like alioth and so and)
 		qcom,batt-id-range-pct = <15>;
 		#include "fg-gen4-batterydata-alioth-FMT-4520mah.dtsi"
 		#include "fg-gen4-batterydata-alioth-GY-4520mah.dtsi"
-		#include "fg-gen4-batterydata-alioth-replacement-safe.dtsi"
+		#include "fg-gen4-batterydata-alioth-custom.dtsi"
 		#include "fg-gen4-batterydata-apollo-sun-5000mah.dtsi"
 	};
 
